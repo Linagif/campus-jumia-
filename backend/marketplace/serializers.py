@@ -2,7 +2,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.hashers import make_password
 from rest_framework import serializers
 
-from .models import Campus, Category, Conversation, Favorite, Listing, ListingImage, Message, Report, University, User
+from .models import Campus, Category, Conversation, Favorite, Listing, ListingImage, Message, Report, SeasonalBanner, University, User, WantedPost
 
 
 class UniversitySerializer(serializers.ModelSerializer):
@@ -81,15 +81,29 @@ class ListingSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     campus_name = serializers.CharField(source="campus.name", read_only=True)
     images = ListingImageSerializer(many=True, read_only=True)
+    is_boosted = serializers.BooleanField(read_only=True)
+    boosted_at = serializers.DateTimeField(read_only=True)
+    boost_expires_at = serializers.DateTimeField(read_only=True)
+    share_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Listing
         fields = [
             "id", "seller", "category", "category_name", "campus", "campus_name",
             "listing_type", "title", "description", "price", "condition", "status",
-            "location", "availability", "images", "created_at", "updated_at",
+            "location", "availability", "images", "is_boosted", "boosted_at",
+            "boost_expires_at", "share_url", "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "seller", "created_at", "updated_at"]
+        read_only_fields = [
+            "id", "seller", "is_boosted", "boosted_at", "boost_expires_at",
+            "share_url", "created_at", "updated_at",
+        ]
+
+    def get_share_url(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(f"/share/listing/{obj.id}/")
+        return f"/share/listing/{obj.id}/"
 
     def validate(self, attrs):
         listing_type = attrs.get("listing_type", getattr(self.instance, "listing_type", Listing.ListingType.ITEM))
@@ -148,3 +162,47 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_unread_count(self, obj):
         user = self.context["request"].user
         return obj.messages.filter(read_at__isnull=True).exclude(sender=user).count()
+
+
+class WantedPostSerializer(serializers.ModelSerializer):
+    buyer = SellerSerializer(read_only=True)
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    campus_name = serializers.CharField(source="campus.name", read_only=True)
+
+    class Meta:
+        model = WantedPost
+        fields = [
+            "id", "buyer", "title", "description", "category", "category_name",
+            "campus", "campus_name", "budget", "urgency", "status", "contact_preference",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "buyer", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        campus = attrs.get("campus")
+        request = self.context.get("request")
+        if request and campus and request.user.is_authenticated and request.user.university_id:
+            if campus.university_id != request.user.university_id:
+                raise serializers.ValidationError({"campus": "Choose a campus within your university."})
+        return attrs
+
+
+class SeasonalBannerSerializer(serializers.ModelSerializer):
+    featured_categories = CategorySerializer(many=True, read_only=True)
+    featured_category_ids = serializers.PrimaryKeyRelatedField(
+        many=True,
+        write_only=True,
+        queryset=Category.objects.all(),
+        source="featured_categories",
+        required=False,
+    )
+
+    class Meta:
+        model = SeasonalBanner
+        fields = [
+            "id", "title", "subtitle", "season_type", "badge_text", "call_to_action",
+            "target_url", "featured_categories", "featured_category_ids", "accent_theme",
+            "banner_image", "start_date", "end_date", "is_active", "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+

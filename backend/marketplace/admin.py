@@ -1,7 +1,20 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import Campus, Category, Conversation, Favorite, Listing, ListingImage, Message, Report, University, User
+from .models import (
+    Campus,
+    Category,
+    Conversation,
+    Favorite,
+    Listing,
+    ListingImage,
+    Message,
+    Report,
+    SeasonalBanner,
+    University,
+    User,
+    WantedPost,
+)
 
 
 @admin.register(User)
@@ -21,10 +34,26 @@ class MarketplaceUserAdmin(UserAdmin):
 
 @admin.register(Listing)
 class ListingAdmin(admin.ModelAdmin):
-    list_display = ["title", "seller", "category", "campus", "price", "status", "created_at"]
+    list_display = ["title", "seller", "category", "campus", "price", "status", "is_boosted", "boost_expires_at", "created_at"]
     list_filter = ["status", "category", "campus", "listing_type"]
     search_fields = ["title", "description", "seller__email"]
     readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(WantedPost)
+class WantedPostAdmin(admin.ModelAdmin):
+    list_display = ["title", "buyer", "category", "campus", "budget", "urgency", "status", "created_at"]
+    list_filter = ["status", "urgency", "category", "campus"]
+    search_fields = ["title", "description", "buyer__email", "buyer__full_name"]
+    readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(SeasonalBanner)
+class SeasonalBannerAdmin(admin.ModelAdmin):
+    list_display = ["title", "season_type", "badge_text", "start_date", "end_date", "is_active", "created_at"]
+    list_filter = ["is_active", "season_type"]
+    search_fields = ["title", "subtitle", "badge_text"]
+    filter_horizontal = ["featured_categories"]
 
 
 @admin.register(Report)

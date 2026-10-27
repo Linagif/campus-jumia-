@@ -109,6 +109,8 @@ class Listing(models.Model):
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.ACTIVE)
     location = models.CharField(max_length=180, blank=True)
     availability = models.CharField(max_length=180, blank=True)
+    boosted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    boost_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -119,7 +121,14 @@ class Listing(models.Model):
             models.Index(fields=["category", "status"], name="listing_category_status_idx"),
             models.Index(fields=["campus", "status"], name="listing_campus_status_idx"),
             models.Index(fields=["price"], name="listing_price_idx"),
+            models.Index(fields=["boost_expires_at", "status"], name="listing_boost_status_idx"),
         ]
+
+    @property
+    def is_boosted(self):
+        if not self.boost_expires_at:
+            return False
+        return self.boost_expires_at > timezone.now()
 
     def __str__(self):
         return self.title
@@ -198,3 +207,67 @@ class Message(models.Model):
     class Meta:
         ordering = ["created_at"]
         indexes = [models.Index(fields=["conversation", "created_at"], name="msg_conv_created_idx")]
+
+
+class WantedPost(models.Model):
+    class Urgency(models.TextChoices):
+        FLEXIBLE = "flexible", "Flexible"
+        SOON = "soon", "Needed this week"
+        URGENT = "urgent", "Urgent / Needed today"
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        FULFILLED = "fulfilled", "Fulfilled"
+        CLOSED = "closed", "Closed"
+
+    buyer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wanted_posts")
+    title = models.CharField(max_length=120)
+    description = models.TextField(max_length=2000)
+    category = models.ForeignKey(Category, null=True, blank=True, on_delete=models.SET_NULL, related_name="wanted_posts")
+    campus = models.ForeignKey(Campus, on_delete=models.CASCADE, related_name="wanted_posts")
+    budget = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, validators=[MinValueValidator(Decimal("0.01"))])
+    urgency = models.CharField(max_length=12, choices=Urgency.choices, default=Urgency.FLEXIBLE)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.ACTIVE)
+    contact_preference = models.CharField(max_length=60, blank=True, default="Chat on Campus Market")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "created_at"], name="wanted_status_created_idx"),
+            models.Index(fields=["campus", "status"], name="wanted_campus_status_idx"),
+            models.Index(fields=["category", "status"], name="wanted_category_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"Wanted: {self.title} by {self.buyer}"
+
+
+class SeasonalBanner(models.Model):
+    class SeasonType(models.TextChoices):
+        SEMESTER_START = "semester_start", "Semester Start / Back to Campus"
+        EXAM_SEASON = "exam_season", "Exam Season & Revisions"
+        SEMESTER_END = "semester_end", "Semester End / Move-out Deals"
+        GRADUATION = "graduation", "Graduation & Career Prep"
+        GENERAL = "general", "Campus Special"
+
+    title = models.CharField(max_length=120)
+    subtitle = models.CharField(max_length=255, blank=True)
+    season_type = models.CharField(max_length=32, choices=SeasonType.choices, default=SeasonType.SEMESTER_START)
+    badge_text = models.CharField(max_length=50, default="Semester Highlight")
+    call_to_action = models.CharField(max_length=60, default="Explore Essentials")
+    target_url = models.CharField(max_length=200, default="/browse")
+    featured_categories = models.ManyToManyField(Category, blank=True, related_name="seasonal_campaigns")
+    accent_theme = models.CharField(max_length=40, default="emerald")
+    banner_image = models.URLField(max_length=500, blank=True)
+    start_date = models.DateField(default=timezone.now)
+    end_date = models.DateField()
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-is_active", "-start_date", "-created_at"]
+
+    def __str__(self):
+        return self.title
