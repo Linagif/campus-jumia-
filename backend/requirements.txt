@@ -8,3 +8,6 @@ pgvector>=0.3.0
 Pillow>=11.2
 python-dotenv>=1.1
 
+dj-database-url>=3.0
+cloudinary>=1.41
+django-cloudinary-storage>=0.3.0
