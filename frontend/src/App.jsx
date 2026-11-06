@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BrowserRouter, Link, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
+  AlertTriangle,
   ArrowDownUp,
   ArrowRight,
   BookOpen,
@@ -12,7 +13,9 @@ import {
   Copy,
   Flame,
   Heart,
+  Inbox,
   Laptop,
+  Lightbulb,
   MapPin,
   Menu,
   Rocket,
@@ -23,20 +26,30 @@ import {
   Sofa,
   Sparkles,
   Tag,
+  User,
   X,
   Zap,
 } from 'lucide-react'
 import AuthPage from './AuthPage'
+import InboxPage from './InboxPage'
+import AccountPage from './AccountPage'
 import {
+  analyzeListingImage,
   apiRequest,
   apiResults,
   boostListing,
+  checkListingForScam,
+  createOrGetConversation,
   createWantedPost,
   deleteWantedPost,
   fulfillWantedPost,
   getActiveSeasonalBanners,
+  getAiPriceRecommendation,
+  getConversations,
+  getSimilarListings,
   getWantedPosts,
   mapApiListing,
+  sendMessage,
 } from './api'
 import './App.css'
 
@@ -237,7 +250,7 @@ function readSaved(key, fallback) {
   }
 }
 
-function Header({ query, setQuery, favoritesCount, user, onLogout }) {
+function Header({ query, setQuery, favoritesCount, unreadCount, user, onLogout }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -282,12 +295,28 @@ function Header({ query, setQuery, favoritesCount, user, onLogout }) {
           <Link className="nav-link" to="/favorites" onClick={() => setMenuOpen(false)}>
             Saved <span className="nav-count">{favoritesCount}</span>
           </Link>
+          {user && (
+            <Link
+              className={location.pathname === '/inbox' ? 'nav-link active' : 'nav-link'}
+              to="/inbox"
+              onClick={() => setMenuOpen(false)}
+            >
+              <Inbox size={15} />
+              {unreadCount > 0 && <span className="nav-count unread-nav-count">{unreadCount}</span>}
+            </Link>
+          )}
           <Link className="sell-button" to="/sell" onClick={() => setMenuOpen(false)}>
             <span>+</span> Sell an item
           </Link>
           {user ? (
             <>
-              <span className="nav-link account-user">{user.full_name?.split(' ')[0] || 'Student'}</span>
+              <Link
+                className="nav-link account-user"
+                to="/profile"
+                onClick={() => setMenuOpen(false)}
+              >
+                <User size={15} /> {user.full_name?.split(' ')[0] || 'Me'}
+              </Link>
               <button
                 className="nav-link account-nav"
                 onClick={() => {
@@ -1453,13 +1482,44 @@ function BrowsePage({ listings, favorites, toggleFavorite, query, setQuery, onSh
   )
 }
 
-function DetailsPage({ listings, favorites, toggleFavorite, onShare, onBoost, _token, user }) {
+function DetailsPage({ listings, favorites, toggleFavorite, onShare, onBoost, token, user }) {
   const { id } = useParams()
   const listing = listings.find((item) => item.id === id)
   const [dialog, setDialog] = useState('')
   const [sent, setSent] = useState(false)
   const [boosting, setBoosting] = useState(false)
   const [boostSuccess, setBoostSuccess] = useState('')
+  const [similar, setSimilar] = useState([])
+  const [sendingMsg, setSendingMsg] = useState(false)
+  const [msgDraft, setMsgDraft] = useState('')
+  const [msgError, setMsgError] = useState('')
+
+  useEffect(() => {
+    if (!listing?._api) return
+    getSimilarListings(listing.id)
+      .then((data) => {
+        const mapped = Array.isArray(data) ? data.map(mapApiListing) : []
+        setSimilar(mapped.filter((s) => String(s.id) !== String(listing.id)).slice(0, 4))
+      })
+      .catch(() => {})
+  }, [listing?.id, listing?._api])
+
+  const handleSendMessage = async () => {
+    if (!msgDraft.trim()) return
+    setMsgError('')
+    setSendingMsg(true)
+    try {
+      if (token && listing._api) {
+        const conv = await createOrGetConversation(listing.id, token)
+        await sendMessage(conv.id, msgDraft.trim(), token)
+      }
+      setSent(true)
+    } catch (err) {
+      setMsgError(err.message || 'Could not send message. Try again.')
+    } finally {
+      setSendingMsg(false)
+    }
+  }
 
   // Dynamically update document title and Open Graph meta tags for WhatsApp & social crawling
   useEffect(() => {
@@ -1634,6 +1694,8 @@ function DetailsPage({ listings, favorites, toggleFavorite, onShare, onBoost, _t
             onClick={() => {
               setDialog('contact')
               setSent(false)
+              setMsgDraft(`Hi ${listing.seller?.split(' ')[0] || 'there'}, is this still available?`)
+              setMsgError('')
             }}
           >
             Message seller <ArrowRight size={17} />
@@ -1648,6 +1710,39 @@ function DetailsPage({ listings, favorites, toggleFavorite, onShare, onBoost, _t
         </section>
       </div>
       <Footer />
+
+      {/* Similar listings */}
+      {similar.length > 0 && (
+        <section className="content-section similar-section">
+          <div className="section-heading">
+            <div>
+              <div className="eyebrow muted-eyebrow">YOU MIGHT ALSO LIKE</div>
+              <h2>Similar listings</h2>
+            </div>
+          </div>
+          <div className="listing-grid">
+            {similar.map((item) => (
+              <article key={item.id} className="listing-card">
+                <Link className="listing-image-link" to={`/listing/${item.id}`}>
+                  <img className="listing-image" src={item.image} alt={item.title} loading="lazy" />
+                </Link>
+                <div className="listing-copy">
+                  <div className="listing-meta">
+                    <span>{item.category}</span>
+                    <span className="dot" />
+                    {item.condition}
+                  </div>
+                  <Link className="listing-title" to={`/listing/${item.id}`}>{item.title}</Link>
+                  <strong className="listing-price">{`KSh ${Number(item.price || 0).toLocaleString('en-KE')}`}</strong>
+                  <div className="listing-footer">
+                    <span><MapPin size={13} />{item.campus}</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {dialog && (
         <div className="modal-backdrop" role="presentation" onClick={() => setDialog('')}>
@@ -1672,10 +1767,15 @@ function DetailsPage({ listings, favorites, toggleFavorite, onShare, onBoost, _t
                   <span>
                     <Check size={24} />
                   </span>
-                  <h2 id="dialog-title">Message sent</h2>
+                  <h2 id="dialog-title">Message sent!</h2>
                   <p>{listing.seller} can reply in your campus inbox.</p>
-                  <button type="button" className="dark-button" onClick={() => setDialog('')}>
-                    Done
+                  {token && (
+                    <Link to="/inbox" className="dark-button" onClick={() => setDialog('')}>
+                      Open Inbox <ArrowRight size={16} />
+                    </Link>
+                  )}
+                  <button type="button" className="btn-secondary" onClick={() => setDialog('')}>
+                    Close
                   </button>
                 </div>
               ) : (
@@ -1685,15 +1785,18 @@ function DetailsPage({ listings, favorites, toggleFavorite, onShare, onBoost, _t
                   <p className="dialog-context">About: {listing.title}</p>
                   <textarea
                     aria-label="Your message"
-                    defaultValue={`Hi ${listing.seller.split(' ')[0]}, is this still available?`}
+                    value={msgDraft}
+                    onChange={(e) => setMsgDraft(e.target.value)}
                     rows="4"
                   />
+                  {msgError && <p className="form-error" role="alert">{msgError}</p>}
                   <button
                     type="button"
                     className="dark-button full-button"
-                    onClick={() => setSent(true)}
+                    onClick={handleSendMessage}
+                    disabled={sendingMsg}
                   >
-                    Send message <ArrowRight size={16} />
+                    {sendingMsg ? 'Sending...' : 'Send message'} <ArrowRight size={16} />
                   </button>
                 </>
               )
@@ -1767,6 +1870,15 @@ function SellPage({ onCreate, token, user }) {
     ['Main Campus', 'Kikuyu Campus', 'Chiromo Campus'].map((name) => ({ id: name, name }))
   )
   const [categoryId, setCategoryId] = useState('Electronics')
+  const [campusId, setCampusId] = useState('')
+  const [condition, setCondition] = useState('used_good')
+  const [titleVal, setTitleVal] = useState('')
+  const [priceVal, setPriceVal] = useState('')
+  const [descVal, setDescVal] = useState('')
+  const [aiPrice, setAiPrice] = useState(null)
+  const [aiScam, setAiScam] = useState(null)
+  const [aiAnalyzing, setAiAnalyzing] = useState(false)
+  const [aiChecking, setAiChecking] = useState(false)
 
   useEffect(() => {
     if (!token) return
@@ -1778,10 +1890,68 @@ function SellPage({ onCreate, token, user }) {
           setCategoriesList(availableCategories)
           setCategoryId(String(availableCategories[0].id))
         }
-        if (availableCampuses.length) setCampusList(availableCampuses)
+        if (availableCampuses.length) {
+          setCampusList(availableCampuses)
+          setCampusId(String(availableCampuses[0].id))
+        }
       })
       .catch((requestError) => setError(requestError.message))
   }, [token, user?.university])
+
+  const requestAiPrice = useCallback(async () => {
+    if (!titleVal.trim()) return
+    setAiPrice(null)
+    try {
+      const result = await getAiPriceRecommendation({
+        title: titleVal,
+        category: categoryId,
+        condition,
+        campus: campusId,
+      })
+      setAiPrice(result)
+    } catch {
+      // ignore
+    }
+  }, [titleVal, categoryId, condition, campusId])
+
+  const handleImageChange = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) { setError('Choose an image smaller than 5MB.'); return }
+    setPreview(URL.createObjectURL(file))
+    setAiAnalyzing(true)
+    try {
+      const result = await analyzeListingImage(file, titleVal)
+      if (result.suggested_title && !titleVal) setTitleVal(result.suggested_title)
+      if (result.suggested_description && !descVal) setDescVal(result.suggested_description)
+      if (result.suggested_condition) setCondition(result.suggested_condition)
+      if (result.suggested_category_id) setCategoryId(String(result.suggested_category_id))
+    } catch {
+      // ignore
+    } finally {
+      setAiAnalyzing(false)
+    }
+  }
+
+  const runScamCheck = async (data) => {
+    setAiChecking(true)
+    setAiScam(null)
+    try {
+      const result = await checkListingForScam({
+        title: data.title,
+        description: data.description,
+        price: data.price,
+        category: data.category,
+        campus: data.campus,
+      })
+      setAiScam(result)
+      return result
+    } catch {
+      return null
+    } finally {
+      setAiChecking(false)
+    }
+  }
 
   const selectedCategory = categoriesList.find((item) => String(item.id) === categoryId)
 
@@ -1797,17 +1967,29 @@ function SellPage({ onCreate, token, user }) {
       return
     }
     setError('')
+
+    // AI scam/duplicate check before publishing
+    const checkData = {
+      title: data.get('title'),
+      description: data.get('description'),
+      price: Number(data.get('price')),
+      category: token ? Number(data.get('category')) : data.get('category'),
+      campus: token ? Number(data.get('campus')) : data.get('campus'),
+    }
+    const scamResult = await runScamCheck(checkData)
+    if (scamResult?.scam?.is_suspicious && !scamResult.scam.safe_to_publish) {
+      setError(`Listing blocked: ${scamResult.scam.warnings[0] || 'High-risk content detected.'}`)
+      return
+    }
+
     try {
       await onCreate({
-        title: data.get('title'),
-        price: Number(data.get('price')),
+        ...checkData,
         category: token ? Number(data.get('category')) : data.get('category'),
         condition: data.get('condition'),
-        campus: token ? Number(data.get('campus')) : data.get('campus'),
         listing_type: selectedCategory?.name === 'Services' ? 'service' : 'item',
         availability: data.get('availability') || '',
         location: data.get('location') || '',
-        description: data.get('description'),
         category_name: selectedCategory?.name || 'Electronics',
         campus_name: campusList.find((item) => String(item.id) === data.get('campus'))?.name || 'Main Campus',
         images: photos,
@@ -1834,12 +2016,26 @@ function SellPage({ onCreate, token, user }) {
         <div className="form-main">
           <label className="field-label">
             What are you listing?
-            <input name="title" required placeholder="e.g. Lenovo ThinkPad X1 Carbon" maxLength="90" />
+            <input
+              name="title"
+              required
+              placeholder="e.g. Lenovo ThinkPad X1 Carbon"
+              maxLength="90"
+              value={titleVal}
+              onChange={(e) => setTitleVal(e.target.value)}
+              onBlur={requestAiPrice}
+            />
           </label>
           <div className="form-row">
             <label className="field-label">
               Category
-              <select name="category" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}>
+              <select
+                name="category"
+                value={categoryId}
+                onChange={(event) => {
+                  setCategoryId(event.target.value)
+                }}
+              >
                 {categoriesList.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
@@ -1849,7 +2045,11 @@ function SellPage({ onCreate, token, user }) {
             </label>
             <label className="field-label">
               Condition
-              <select name="condition">
+              <select
+                name="condition"
+                value={condition}
+                onChange={(e) => setCondition(e.target.value)}
+              >
                 <option value="new">New</option>
                 <option value="like_new">Like New</option>
                 <option value="used_good">Used - Good</option>
@@ -1865,6 +2065,8 @@ function SellPage({ onCreate, token, user }) {
               rows="5"
               placeholder="Share the details a fellow student should know..."
               maxLength="1200"
+              value={descVal}
+              onChange={(e) => setDescVal(e.target.value)}
             />
           </label>
           {selectedCategory?.name === 'Services' && (
@@ -1878,12 +2080,42 @@ function SellPage({ onCreate, token, user }) {
               Price <span className="field-hint">in Kenyan shillings</span>
               <div className="price-input">
                 <span>KSh</span>
-                <input name="price" type="number" required min="1" placeholder="0" />
+                <input
+                  name="price"
+                  type="number"
+                  required
+                  min="1"
+                  placeholder="0"
+                  value={priceVal}
+                  onChange={(e) => setPriceVal(e.target.value)}
+                />
               </div>
+              {/* AI Price Recommendation Chip */}
+              {aiPrice?.status === 'sufficient_data' && (
+                <div className="ai-price-chip">
+                  <Lightbulb size={14} />
+                  <span>
+                    Fair price for {condition.replace('_', ' ')}:{' '}
+                    <strong>KSh {Number(aiPrice.recommended_price).toLocaleString('en-KE')}</strong>
+                    {' '}(range: KSh {Number(aiPrice.min_price).toLocaleString('en-KE')} – KSh {Number(aiPrice.max_price).toLocaleString('en-KE')})
+                  </span>
+                  <button
+                    type="button"
+                    className="use-price-btn"
+                    onClick={() => setPriceVal(String(aiPrice.recommended_price))}
+                  >
+                    Use
+                  </button>
+                </div>
+              )}
             </label>
             <label className="field-label">
               Campus
-              <select name="campus">
+              <select
+                name="campus"
+                value={campusId}
+                onChange={(e) => setCampusId(e.target.value)}
+              >
                 {campusList.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name}
@@ -1896,6 +2128,28 @@ function SellPage({ onCreate, token, user }) {
             Meet-up spot <span className="field-hint">optional</span>
             <input name="location" placeholder="e.g. Main library entrance" />
           </label>
+
+          {/* AI Scam / Duplicate Warnings */}
+          {aiScam && aiScam.scam?.warnings?.length > 0 && (
+            <div className={`ai-warning-panel ${aiScam.scam.risk_level === 'high' ? 'risk-high' : 'risk-medium'}`}>
+              <AlertTriangle size={16} />
+              <div>
+                <strong>Listing review flagged</strong>
+                {aiScam.scam.warnings.map((w, i) => (
+                  <p key={i}>{w}</p>
+                ))}
+              </div>
+            </div>
+          )}
+          {aiScam && aiScam.duplicate?.is_duplicate && (
+            <div className="ai-warning-panel risk-medium">
+              <AlertTriangle size={16} />
+              <div>
+                <strong>Possible duplicate</strong>
+                <p>{aiScam.duplicate.warning}</p>
+              </div>
+            </div>
+          )}
         </div>
         <div className="form-aside">
           <label className="field-label">
@@ -1907,7 +2161,7 @@ function SellPage({ onCreate, token, user }) {
                 <>
                   <span className="upload-icon">+</span>
                   <strong>Add photos</strong>
-                  <span>JPG, PNG or WebP, up to 5MB each</span>
+                  <span>{aiAnalyzing ? 'Analysing image...' : 'JPG, PNG or WebP, up to 5MB each'}</span>
                 </>
               )}
               <input
@@ -1916,13 +2170,10 @@ function SellPage({ onCreate, token, user }) {
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
                 multiple
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file && file.size <= 5 * 1024 * 1024) setPreview(URL.createObjectURL(file))
-                  else if (file) setError('Choose an image smaller than 5MB.')
-                }}
+                onChange={handleImageChange}
               />
             </div>
+            {aiAnalyzing && <p className="ai-analyzing-note"><Sparkles size={13} /> AI is reading your image…</p>}
           </label>
           <div className="safety-note">
             <ShieldCheck size={18} />
@@ -1938,8 +2189,8 @@ function SellPage({ onCreate, token, user }) {
               {error}
             </p>
           )}
-          <button type="submit" className="dark-button">
-            Publish listing <ArrowRight size={17} />
+          <button type="submit" className="dark-button" disabled={aiChecking}>
+            {aiChecking ? 'Checking listing...' : 'Publish listing'} <ArrowRight size={17} />
           </button>
           <span>Keep our campus community respectful.</span>
         </div>
@@ -1982,6 +2233,7 @@ function AppShell() {
     categories.slice(1).map((c, i) => ({ id: String(i + 1), name: c.name }))
   )
   const [activeMessageTarget, setActiveMessageTarget] = useState(null)
+  const [unreadCount, setUnreadCount] = useState(0)
 
   // Fetch remote listings
   useEffect(() => {
@@ -2025,6 +2277,22 @@ function AppShell() {
       })
       .catch(() => {})
   }, [])
+
+  // Poll unread message count
+  useEffect(() => {
+    if (!accessToken) return
+    const update = () =>
+      getConversations(accessToken)
+        .then((payload) => {
+          const convs = apiResults(payload)
+          const total = convs.reduce((sum, c) => sum + (c.unread_count || 0), 0)
+          setUnreadCount(total)
+        })
+        .catch(() => {})
+    update()
+    const id = setInterval(update, 30000)
+    return () => clearInterval(id)
+  }, [accessToken])
 
   // Fetch campuses and categories
   useEffect(() => {
@@ -2150,6 +2418,7 @@ function AppShell() {
         query={query}
         setQuery={setQuery}
         favoritesCount={favorites.length}
+        unreadCount={unreadCount}
         user={user}
         onLogout={logout}
       />
@@ -2197,6 +2466,14 @@ function AppShell() {
               user={user}
             />
           }
+        />
+        <Route
+          path="/inbox"
+          element={<InboxPage user={user} token={accessToken} />}
+        />
+        <Route
+          path="/profile"
+          element={<AccountPage user={user} token={accessToken} onLogout={logout} />}
         />
         <Route
           path="/wanted"

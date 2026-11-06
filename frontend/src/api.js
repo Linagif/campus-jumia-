@@ -52,17 +52,51 @@ export function mapApiListing(item) {
     boosted_at: item.boosted_at,
     boost_expires_at: item.boost_expires_at,
     share_url: item.share_url,
+    status: item.status,
+    listing_type: item.listing_type,
+    category_id: item.category,
+    campus_id: item.campus,
+    created_at: item.created_at,
   }
 }
 
+// ─── Listings ───────────────────────────────────────────────
 export async function boostListing(listingId, token) {
   return apiRequest(`/listings/${listingId}/boost/`, { method: 'POST', token })
+}
+
+export async function markListingSold(listingId, token) {
+  return apiRequest(`/listings/${listingId}/mark_sold/`, { method: 'POST', token })
+}
+
+export async function deleteListingApi(listingId, token) {
+  return apiRequest(`/listings/${listingId}/`, { method: 'DELETE', token })
+}
+
+export async function updateListingApi(listingId, data, token) {
+  const body = new FormData()
+  Object.entries(data).forEach(([key, value]) => {
+    if (key !== 'images' && value !== undefined && value !== null && value !== '') {
+      body.append(key, value)
+    }
+  })
+  if (data.images) data.images.forEach((img) => body.append('images', img))
+  return apiRequest(`/listings/${listingId}/`, { method: 'PATCH', token, body })
+}
+
+export async function getMyListings(token) {
+  return apiRequest('/listings/my_listings/', { token })
+}
+
+export async function getSimilarListings(listingId) {
+  return apiRequest(`/listings/${listingId}/similar/`)
 }
 
 export async function getListingShareData(listingId) {
   return apiRequest(`/listings/${listingId}/share_data/`)
 }
 
+// ─── Wanted Posts ─────────────────────────────────────────
 export async function getWantedPosts(params = {}) {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, val]) => {
@@ -84,7 +118,62 @@ export async function deleteWantedPost(id, token) {
   return apiRequest(`/wanted-posts/${id}/`, { method: 'DELETE', token })
 }
 
+// ─── Seasonal banners ───────────────────────────────────────
 export async function getActiveSeasonalBanners() {
   return apiRequest('/seasonal-banners/active/')
 }
 
+// ─── Conversations & Messages ────────────────────────────────
+export async function getConversations(token) {
+  return apiRequest('/conversations/', { token })
+}
+
+export async function createOrGetConversation(listingId, token) {
+  return apiRequest('/conversations/', { method: 'POST', token, body: { listing: listingId } })
+}
+
+export async function getMessages(conversationId, token) {
+  return apiRequest(`/conversations/${conversationId}/messages/`, { token })
+}
+
+export async function sendMessage(conversationId, body, token) {
+  return apiRequest(`/conversations/${conversationId}/messages/`, { method: 'POST', token, body: { body } })
+}
+
+// ─── AI Services ───────────────────────────────────────────
+const AI_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/api$/, '')
+
+async function aiRequest(path, options = {}) {
+  let response
+  try {
+    response = await fetch(`${AI_BASE}${path}`, options)
+  } catch {
+    throw new Error('AI service unavailable.')
+  }
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(payload?.error || 'AI request failed.')
+  return payload
+}
+
+export async function getAiPriceRecommendation({ title, category, condition, campus }) {
+  return aiRequest('/api/ai/price-recommendation/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, category_id: category, condition, campus_id: campus }),
+  })
+}
+
+export async function analyzeListingImage(imageFile, titleHint = '') {
+  const form = new FormData()
+  form.append('image', imageFile)
+  if (titleHint) form.append('title', titleHint)
+  return aiRequest('/api/ai/analyze-image/', { method: 'POST', body: form })
+}
+
+export async function checkListingForScam({ title, description, price, category, campus, listingId }) {
+  return aiRequest('/api/ai/check-listing/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, description, price, category_id: category, campus_id: campus, listing_id: listingId }),
+  })
+}

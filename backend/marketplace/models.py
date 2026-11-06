@@ -7,6 +7,7 @@ from django.core.validators import FileExtensionValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+from pgvector.django import VectorField
 
 
 class UserManager(BaseUserManager):

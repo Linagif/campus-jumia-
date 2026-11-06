@@ -10,11 +10,14 @@ from marketplace.views import (
     CategoryViewSet,
     ConversationViewSet,
     FavoriteViewSet,
+    ImageAnalysisView,
     ListingShareView,
     ListingViewSet,
     MeView,
+    PriceRecommendationView,
     RegisterView,
     ReportViewSet,
+    ScamDetectionView,
     SeasonalBannerViewSet,
     UniversityViewSet,
     WantedPostViewSet,
@@ -40,6 +43,10 @@ urlpatterns = [
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/auth/logout/", TokenBlacklistView.as_view(), name="token_blacklist"),
     path("api/auth/me/", MeView.as_view(), name="me"),
+    # AI-powered endpoints
+    path("api/ai/price-recommendation/", PriceRecommendationView.as_view(), name="ai_price_recommendation"),
+    path("api/ai/analyze-image/", ImageAnalysisView.as_view(), name="ai_analyze_image"),
+    path("api/ai/check-listing/", ScamDetectionView.as_view(), name="ai_check_listing"),
     path("api/", include(router.urls)),
 ]
 

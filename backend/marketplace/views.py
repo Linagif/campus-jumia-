@@ -14,7 +14,15 @@ from rest_framework.generics import CreateAPIView, RetrieveUpdateAPIView
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
+from .ai_services import (
+    analyze_listing_image,
+    detect_duplicate_listing,
+    detect_scam_and_spam,
+    generate_embedding,
+    get_price_recommendation,
+)
 from .filters import ListingFilter, WantedPostFilter
 from .models import (
     Campus,
@@ -192,6 +200,157 @@ class ListingViewSet(viewsets.ModelViewSet):
             "twitter_url": f"https://twitter.com/intent/tweet?text={quote_plus(whatsapp_text)}",
             "og_title": f"{listing.title} - KSh {listing.price:,.0f} | Campus Jumia",
             "og_description": f"{listing.campus.name} • {listing.category.name} • {listing.description[:140]}",
+        })
+
+    @action(detail=True, methods=["get"], permission_classes=[AllowAny])
+    def similar(self, request, pk=None):
+        """Return up to 6 similar listings using embedding cosine similarity (text heuristic)."""
+        listing = self.get_object()
+        query_text = f"{listing.title} {listing.description} {listing.category.name}"
+        query_vec = generate_embedding(query_text)
+
+        candidates = (
+            Listing.objects
+            .filter(status=Listing.Status.ACTIVE)
+            .exclude(pk=listing.pk)
+            .select_related("seller", "category", "campus")
+            .prefetch_related("images")[:60]
+        )
+
+        from .ai_services import cosine_similarity
+        scored = []
+        for candidate in candidates:
+            cand_text = f"{candidate.title} {candidate.description} {candidate.category.name}"
+            cand_vec = generate_embedding(cand_text)
+            score = cosine_similarity(query_vec, cand_vec)
+            scored.append((score, candidate))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_candidates = [c for _, c in scored[:6]]
+        serializer = self.get_serializer(top_candidates, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
+    def my_listings(self, request):
+        """Return all listings (any status) owned by the authenticated seller."""
+        now = timezone.now()
+        queryset = (
+            Listing.objects
+            .filter(seller=request.user)
+            .select_related("seller", "category", "campus")
+            .prefetch_related("images")
+            .annotate(
+                is_active_boost=Case(
+                    When(boost_expires_at__gt=now, then=Value(True)),
+                    default=Value(False),
+                    output_field=BooleanField(),
+                )
+            )
+            .order_by("-created_at")
+        )
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    def mark_sold(self, request, pk=None):
+        """Mark a listing as sold (seller only)."""
+        listing = self.get_object()
+        if listing.seller != request.user:
+            raise PermissionDenied("You can only mark your own listings as sold.")
+        listing.status = Listing.Status.SOLD
+        listing.save(update_fields=["status"])
+        return Response(self.get_serializer(listing).data, status=status.HTTP_200_OK)
+
+
+# ============================================================
+# AI-powered API views
+# ============================================================
+
+class PriceRecommendationView(APIView):
+    """
+    POST /api/ai/price-recommendation/
+    Body: { title, category_id?, condition, campus_id? }
+    Returns a fair price range derived from real platform listings.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        title = request.data.get("title", "")
+        category_id = request.data.get("category_id") or request.data.get("category")
+        condition = request.data.get("condition", "used_good")
+        campus_id = request.data.get("campus_id") or request.data.get("campus")
+        result = get_price_recommendation(
+            title=title,
+            category_id=int(category_id) if category_id else None,
+            condition=condition,
+            campus_id=int(campus_id) if campus_id else None,
+        )
+        return Response(result)
+
+
+class ImageAnalysisView(APIView):
+    """
+    POST /api/ai/analyze-image/  (multipart with 'image' file + optional 'title' hint)
+    Returns suggested title, category, condition, description, confidence.
+    """
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        image_file = request.FILES.get("image")
+        if not image_file:
+            return Response({"error": "Upload an image file."}, status=status.HTTP_400_BAD_REQUEST)
+        if image_file.size > 5 * 1024 * 1024:
+            return Response({"error": "Image must be 5MB or smaller."}, status=status.HTTP_400_BAD_REQUEST)
+        title_hint = request.data.get("title", "")
+        result = analyze_listing_image(
+            image_file=image_file,
+            filename_hint=image_file.name or "",
+            title_hint=title_hint,
+        )
+        return Response(result)
+
+
+class ScamDetectionView(APIView):
+    """
+    POST /api/ai/check-listing/
+    Body: { title, description, price, category_id? }
+    Screens the listing for scam patterns before publish.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        title = request.data.get("title", "")
+        description = request.data.get("description", "")
+        try:
+            price = float(request.data.get("price", 0) or 0)
+        except (ValueError, TypeError):
+            price = 0.0
+        category_id = request.data.get("category_id") or request.data.get("category")
+
+        scam = detect_scam_and_spam(
+            title=title,
+            description=description,
+            price=price,
+            category_id=int(category_id) if category_id else None,
+        )
+
+        listing_id = request.data.get("listing_id")
+        seller_id = request.user.id if request.user.is_authenticated else None
+        campus_id = request.data.get("campus_id") or request.data.get("campus")
+
+        duplicate = detect_duplicate_listing(
+            title=title,
+            description=description,
+            price=price,
+            seller_id=seller_id,
+            campus_id=int(campus_id) if campus_id else None,
+            exclude_listing_id=int(listing_id) if listing_id else None,
+        )
+
+        return Response({
+            "scam": scam,
+            "duplicate": duplicate,
         })
 
 
